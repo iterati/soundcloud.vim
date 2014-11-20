@@ -34,12 +34,9 @@ class Client(object):
             password=password,
         )
         self.client_id = client_id
-        self.session = requests.session()
-        self.auth_params = {'oauth_token': self.sc_client.access_token, 'client_id': client_id}
 
     def get(self, endpoint, **kwargs):
-        kwargs.update(self.auth_params)
-        return self.session.get(self._base_url + endpoint + '.json', params=kwargs)
+        return self.sc_client.get(endpoint + '.json', **kwargs)
 
     def post(self, endpoint, **kwargs):
         return self.sc_client.post(endpoint, **kwargs)
@@ -167,23 +164,23 @@ class Track(object):
         return "::".join([str(self._id), self.username, self.title])
 
     def get_info(self):
-        return get_client().get('/tracks/%s' % self._id).json()[0]
+        return get_client().get('/tracks/%s' % self._id).json()[0].obj
 
     @classmethod
     def get(cls, q):
         if q and unicode(q).isdigit():
-            tracks = get_client().get('tracks/%s' % q).json()
+            tracks = [t.obj for t in get_client().get('tracks/%s' % q).json()]
         else:
-            tracks = get_client().get('tracks', q=q).json()
+            tracks = [t.obj for t in get_client().get('tracks', q=q).json()]
         return [Track(**track) for track in tracks]
 
     @classmethod
     def get_from_stream(cls):
-        resp = get_client().get('me/activities/tracks/affiliated').json()
+        resp = [t.obj for t in get_client().get('me/activities/tracks/affiliated').json()]
         return [Track(**i['origin']) for i in resp['collection']]
 
     def get_related(self):
-        resp = get_client().get('tracks/%s/related' % self._id).json()
+        resp = [t.obj for t in get_client().get('tracks/%s/related' % self._id).json()]
         return [Track(**i) for i in resp]
 
     @property
@@ -206,15 +203,15 @@ class Playlist(dict):
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            playlists = get_client().get('playlists/%s' % q).json()
+            playlists = [p.obj for p in get_client().get('playlists/%s' % q).json()]
         else:
-            playlists = get_client().get('playlists', q=q).json()
+            playlists = [p.obj for p in get_client().get('playlists', q=q).json()]
         return [Playlist(**playlist) for playlist in playlists]
 
     @property
     def tracks(self):
         if not hasattr(self, '_tracks'):
-            playlist = get_client().get('playlists/%s' % self._id).json()
+            playlist = [t.obj for t in get_client().get('playlists/%s' % self._id).json()]
             self._tracks = [Track(**t) for t in playlist['tracks']]
         return self._tracks
 
@@ -234,15 +231,15 @@ class User(object):
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            users = get_client().get('users/%s' % q).json()
+            users = [u.obj for u in get_client().get('users/%s' % q).json()]
         else:
-            users = get_client().get('users', q=q).json()
+            users = [u.obj for u in get_client().get('users', q=q).json()]
         return [User(**user) for user in users]
 
     @property
     def tracks(self):
         if not hasattr(self, '_tracks'):
-            tracks = get_client().get('users/%s/tracks' % self._id).json()
+            tracks = [t.obj for t in get_client().get('users/%s/tracks' % self._id).json()]
             self._tracks = [Track(**t) for t in tracks]
         return self._tracks
 
@@ -375,4 +372,4 @@ nnoremap <leader><leader>l          :SClist<CR>
 nnoremap <leader><leader>n          :SCnext<CR>
 nnoremap <leader><leader>p          :SCprev<CR>
 nnoremap <leader><leader><leader>   :SCpause<CR>
-nnoremap <leader><leader>b          :python player.bookmark()
+nnoremap <leader><leader>b          :python player.bookmark()<CR>
