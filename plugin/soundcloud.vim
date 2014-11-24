@@ -171,7 +171,8 @@ class Player(object):
 
         tracks = [{'id': t._id} for t in get_client().playlist.tracks]
         tracks.append({'id': track._id})
-        get_client().playlist.update()
+        playlist = get_client().put(get_client().playlist.uri, playlist={'tracks': tracks})
+        setattr(get_client().playlist, '_tracks', [Track(**t) for t in playlist['tracks']])
         return "bookmarked %s" % track
 
 
@@ -244,7 +245,7 @@ class Playlist(dict):
 
     def update(self):
         playlist = get_client().get('playlists/%s' % self._id)
-        self._tracks = [Track(**t) for t in playlist['tracks']]
+        setattr(self, '_tracks', [Track(**t) for t in playlist['tracks']])
 
 
 class User(object):
@@ -626,7 +627,7 @@ EOF
 
 
 autocmd BufEnter _soundcloud-playlist :python _update_playlist()
-" autocmd BufEnter _soundcloud-bookmarks :python _update_bookmarks()
+autocmd BufEnter _soundcloud-bookmarks :python _update_bookmarks()
 
 command! -nargs=0 SCplay        :python player_do('play')
 command! -nargs=0 SCstop        :python player_do('stop')
@@ -643,12 +644,13 @@ command! -nargs=* SCst          :python search('tracks', '<args>')
 command! -nargs=* SCsp          :python search('playlists', '<args>')
 command! -nargs=* SCsu          :python search('users', '<args>')
 
+nnoremap <silent><leader><leader>V          :python launch_vlc()<CR>
 nnoremap <silent><leader><leader><leader>   :SCpause<CR>
 nnoremap <silent><leader><leader>l          :SClist<CR>
 nnoremap <silent><leader><leader>L          :SClistbook<CR>
 nnoremap <silent><leader><leader>S          :SCliststream<CR>
 nnoremap <silent><leader><leader>n          :SCnext<CR>
 nnoremap <silent><leader><leader>p          :SCprev<CR>
-nnoremap <silent><leader><leader>b          :python player.bookmark()<CR>
+nnoremap <silent><leader><leader>b          :python player_do('bookmark')<CR>
 nnoremap <silent><leader><leader>d          :SCclear<CR>
 nnoremap <silent><leader><leader>s          :SCshuffle<CR>
