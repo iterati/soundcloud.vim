@@ -1,11 +1,7 @@
-if !has('python')
-    echo "Error: Requires vim compiled with +python"
-    finish
-endif
-
 let path = expand('<sfile>:p')
 
 python << EOF
+import functools
 import os
 import requests
 import soundcloud
@@ -36,18 +32,30 @@ class Client(object):
         self.client_id = client_id
 
     def get(self, endpoint, **kwargs):
-        return self.sc_client.get(endpoint + '.json', **kwargs)
+        resp = self.sc_client.get(endpoint, **kwargs)
+        if isinstance(resp, soundcloud.resource.ResourceList):
+            return [r.obj for r in resp]
+        elif isinstance(resp, soundcloud.resource.Resource):
+            return resp.obj
 
     def post(self, endpoint, **kwargs):
-        return self.sc_client.post(endpoint, **kwargs)
+        resp = self.sc_client.post(endpoint, **kwargs)
+        if isinstance(resp, soundcloud.resource.ResourceList):
+            return [r.obj for r in resp]
+        elif isinstance(resp, soundcloud.resource.Resource):
+            return resp.obj
 
     def put(self, endpoint, **kwargs):
-        return self.sc_client.put(endpoint, **kwargs)
+        resp = self.sc_client.put(endpoint, **kwargs)
+        if isinstance(resp, soundcloud.resource.ResourceList):
+            return [r.obj for r in resp]
+        elif isinstance(resp, soundcloud.resource.Resource):
+            return resp.obj
 
     @property
     def playlist(self):
         if not hasattr(self, '_playlist'):
-            for playlist in (Playlist(**d) for d in self.get('me/playlists').json()):
+            for playlist in (Playlist(**d) for d in self.get('me/playlists')):
                 if playlist.title == 'Silverlining Playlist':
                     self._playlist = playlist
                     break
@@ -70,7 +78,7 @@ class Player(object):
             username = username.replace('+', ' ')
             title = title.replace('+', ' ')
             track = Track(id, title, username)
-            track.plid = d['id']
+            setattr(track, 'plid', d['id'])
             tracks.append(track)
         return tracks
 
@@ -97,43 +105,59 @@ class Player(object):
         return rtn
 
     def play(self, idx=None):
-        idx = int(idx)
-        self.get('status.json', command='pl_play', id=self.list_tracks()[idx].plid if idx else -1)
+        if idx is None:
+            plid = -1
+            msg = "playing"
+        else:
+            track = self.list_tracks()[int(idx)]
+            plid = track.plid
+            msg = "playing %s" % track
+
+        self.get('status.json', command='pl_play', id=plid)
+        return msg
 
     def stop(self):
         self.get('status.json', command='pl_stop')
+        return "stopped"
 
-    def enqueue(self, track_or_playlist):
-        if isinstance(track_or_playlist, Track):
-            self.get('status.json', command='in_enqueue', input=track_or_playlist.stream_uri, name=track_or_playlist.to_vlc())
+    def enqueue(self, item):
+        if isinstance(item, Track):
+            self.get('status.json', command='in_enqueue', input=item.stream_uri, name=item.to_vlc())
+            return 1
         else:
-            for track in track_or_playlist.tracks:
+            for track in item.tracks:
                 self.get('status.json', command='in_enqueue', input=track.stream_uri, name=track.to_vlc())
-
+            return len(item.tracks)
 
     def remove(self, idx):
-        idx = int(idx)
-        self.get('status.json', command='pl_delete', id=self.list_tracks()[idx].plid)
+        track = self.list_tracks()[int(idx)]
+        self.get('status.json', command='pl_delete', id=track.plid)
+        return "removed %s" % track
 
     def pause(self):
         self.get('status.json', command='pl_pause')
+        return "paused"
 
     def next(self):
         self.get('status.json', command='pl_next')
+        return "next"
 
     def previous(self):
         self.get('status.json', command='pl_previous')
+        return "previous"
 
     def shuffle(self):
         self.get('status.json', command='pl_sort', id=0, val="random")
-        self._sync_queue()
+        return "shuffling"
 
     def clear(self):
         self.stop()
         self.get('status.json', command='pl_empty')
+        return "cleared playlist"
 
     def seek(self, val):
         self.get('status.json', command='seek', val=val)
+        return "seeking %s" % val
 
     def bookmark(self, idx=None):
         if idx:
@@ -147,8 +171,8 @@ class Player(object):
 
         tracks = [{'id': t._id} for t in get_client().playlist.tracks]
         tracks.append({'id': track._id})
-        resp = get_client().put(get_client().playlist.uri, playlist={'tracks': tracks})
-        get_client()._playlist = Playlist(**resp.obj)
+        get_client().playlist.update()
+        return "bookmarked %s" % track
 
 
 class Track(object):
@@ -164,23 +188,23 @@ class Track(object):
         return "::".join([str(self._id), self.username, self.title])
 
     def get_info(self):
-        return get_client().get('/tracks/%s' % self._id).json()[0].obj
+        return get_client().get('/tracks/%s' % self._id)[0]
 
     @classmethod
     def get(cls, q):
         if q and unicode(q).isdigit():
-            tracks = [t.obj for t in get_client().get('tracks/%s' % q).json()]
+            tracks = get_client().get('tracks/%s' % q)
         else:
-            tracks = [t.obj for t in get_client().get('tracks', q=q).json()]
+            tracks = get_client().get('tracks', q=q)
         return [Track(**track) for track in tracks]
 
     @classmethod
     def get_from_stream(cls):
-        resp = [t.obj for t in get_client().get('me/activities/tracks/affiliated').json()]
+        resp = get_client().get('me/activities/tracks/affiliated')
         return [Track(**i['origin']) for i in resp['collection']]
 
     def get_related(self):
-        resp = [t.obj for t in get_client().get('tracks/%s/related' % self._id).json()]
+        resp = get_client().get('tracks/%s/related' % self._id)
         return [Track(**i) for i in resp]
 
     @property
@@ -203,21 +227,24 @@ class Playlist(dict):
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            playlists = [p.obj for p in get_client().get('playlists/%s' % q).json()]
+            playlists = get_client().get('playlists/%s' % q)
         else:
-            playlists = [p.obj for p in get_client().get('playlists', q=q).json()]
+            playlists = get_client().get('playlists', q=q)
         return [Playlist(**playlist) for playlist in playlists]
 
     @property
     def tracks(self):
         if not hasattr(self, '_tracks'):
-            playlist = [t.obj for t in get_client().get('playlists/%s' % self._id).json()]
-            self._tracks = [Track(**t) for t in playlist['tracks']]
+            self.update()
         return self._tracks
 
     @property
     def uri(self):
         return 'playlists/%s' % self._id
+
+    def update(self):
+        playlist = get_client().get('playlists/%s' % self._id)
+        self._tracks = [Track(**t) for t in playlist['tracks']]
 
 
 class User(object):
@@ -231,15 +258,15 @@ class User(object):
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            users = [u.obj for u in get_client().get('users/%s' % q).json()]
+            users = get_client().get('users/%s' % q)
         else:
-            users = [u.obj for u in get_client().get('users', q=q).json()]
+            users = get_client().get('users', q=q)
         return [User(**user) for user in users]
 
     @property
     def tracks(self):
         if not hasattr(self, '_tracks'):
-            tracks = [t.obj for t in get_client().get('users/%s/tracks' % self._id).json()]
+            tracks = get_client().get('users/%s/tracks' % self._id)
             self._tracks = [Track(**t) for t in tracks]
         return self._tracks
 
@@ -251,12 +278,32 @@ class User(object):
             self._playlists = [Playlist(**p) for p in playlists]
         return self._playlists
 
+    def get_stream(self):
+        items = []
+        for i in range(1):
+            url = "https://api-v2.soundcloud.com/profile/soundcloud:users:%s?limit=50&offset=%s"
+            r = requests.get(url % (self._id, i * 50))
+            if not r.status_code == 200:
+                print "fuck"
+                continue
+
+            for item in r.json()['collection']:
+                if item['type'] in ['track', 'track-repost']:
+                    items.append(Track(**item['track']))
+                elif item['type'] in ['playlist', 'playlist-repost']:
+                    items.append(Playlist(**item['playlist']))
+
+        return items
+
 
 player = Player()
 client = None
+_buffer = {}
 
 
 def get_client():
+    """Prevents multiple client calls or doing client calls when you open
+    vim."""
     global client
     if not client:
         try:
@@ -266,19 +313,190 @@ def get_client():
     return client
 
 
-# vim hooks
-def _make_window():
-    vim.command("try|pcl|catch||endtry")
-    vim.command("silent pedit +set\ ma soundcloud")
+def _echo(func):
+    @functools.wraps(func)
+    def wrapper(*args):
+        msg = func(*args)
+        if msg:
+            print msg
+        return msg
+    return wrapper
+
+
+def _display_item(item):
+    if isinstance(item, User):
+        _type = 'u'
+    elif isinstance(item, Playlist):
+        _type = 'p'
+    elif isinstance(item, Track):
+        _type = 't'
+    else:
+        raise ValueError("item is %s" % type(item))
+    return "{:<8}{}".format(_type, item)
+
+
+def _handle_user(user, action):
+    if action == 'list_tracks':
+        b_name = "%s-tracks" % user
+        b_name = b_name.replace(' ', '_')
+        _make_window(b_name)
+        if b_name not in _buffer:
+            _buffer[b_name] = user.tracks
+
+        vim.command("setlocal modifiable")
+        vim.current.buffer[:] = [_display_item(item) for item in _buffer[b_name]]
+        vim.command("setlocal nomodifiable")
+        return "listing %s's tracks" % user
+    elif action == 'list_playlists':
+        b_name = "%s-playlists" % user
+        b_name = b_name.replace(' ', '_')
+        _make_window(b_name)
+        if b_name not in _buffer:
+            _buffer[b_name] = user.playlists
+
+        vim.command("setlocal modifiable")
+        vim.current.buffer[:] = [_display_item(item) for item in _buffer[b_name]]
+        vim.command("setlocal nomodifiable")
+        return "listing %s's playlists" % user
+    elif action == 'list_stream':
+        b_name = "%s-stream" % user
+        b_name = b_name.replace(' ', '_')
+        _make_window(b_name)
+        if b_name not in _buffer:
+            _buffer[b_name] = user.get_stream()
+
+        vim.command("setlocal modifiable")
+        vim.current.buffer[:] = [_display_item(item) for item in _buffer[b_name]]
+        vim.command("setlocal nomodifiable")
+        return "listing %s's stream" % user
+    else:
+        return "can't %s a user" % action
+
+
+def _handle_playlist(playlist, action):
+    if action == 'list_tracks':
+        b_name = "%s-tracks" % playlist
+        b_name = b_name.replace(' ', '_')
+        _make_window(b_name)
+        if b_name not in _buffer:
+            _buffer[b_name] = playlist.tracks
+
+        vim.command("setlocal modifiable")
+        vim.current.buffer[:] = [_display_item(item) for item in _buffer[b_name]]
+        vim.command("setlocal nomodifiable")
+        return "listing %s's %s tracks" % (playlist, len(playlist.tracks))
+    elif action == 'enqueue':
+        player.enqueue(playlist)
+        return "enqueing %s's %s tracks" % (playlist, len(playlist.tracks))
+    else:
+        return "can't %s a playlist" % action
+
+
+def _handle_track(track, action):
+    if action == 'enqueue':
+        player.enqueue(track)
+        return "enqueing %s" % track
+    else:
+        return "can't %s a track" % action
+
+
+@_echo
+def handle_item(item, action):
+    if isinstance(item, User):
+        return _handle_user(item, action)
+    elif isinstance(item, Playlist):
+        return _handle_playlist(item, action)
+    elif isinstance(item, Track):
+        return _handle_track(item, action)
+    else:
+        return "%s is not a valid item" % item
+
+
+@_echo
+def play_current():
+    msg = player.play(_get_line_num())
+    _update_playlist()
+    return msg
+
+
+@_echo
+def enqueue_range():
+    b_name = _parse_buffer_name(vim.current.buffer.name)
+    if b_name not in _buffer:
+        return None
+
+    start = vim.current.range.start
+    end = vim.current.range.end + 1
+    items = _buffer[b_name][start:end]
+
+    total = 0
+    for item in items:
+        if not isinstance(item, (Track, Playlist)):
+            continue
+
+        if isinstance(item, Track):
+            total += 1
+        elif isinstance(item, Playlist):
+            total += len(playlist.tracks)
+
+        player.enqueue(item)
+
+    return "enqueued %s tracks" % total
+
+
+@_echo
+def remove_current():
+    msg = player.remove(_get_line_num())
+    _update_playlist()
+    return msg
+
+
+@_echo
+def remove_range():
+    start = vim.current.range.start
+    end = vim.current.range.end + 1
+    for i in range(end - start):
+        player.remove(start)
+    _update_playlist()
+    return "removed %s tracks" % (end - start)
+
+
+def _make_window(subtitle):
+    title = "_soundcloud"
+    if subtitle:
+        title += "-" + subtitle
+
+    vim.command("silent pedit %s" % title)
     vim.command("wincmd P")
     vim.command("set buftype=nofile")
     vim.command("setlocal nobuflisted")
-    vim.command("setlocal modifiable noro")
-    vim.command("nnoremap <silent><buffer> <leader> <noop>")
-    vim.command("nnoremap <silent><buffer> t <noop>")
-    vim.command("nnoremap <silent><buffer> d <noop>")
-    vim.command("nnoremap <silent><buffer> p <noop>")
     vim.command("nnoremap <silent><buffer> q :q<CR>")
+    vim.command("setlocal nomodifiable")
+
+    if subtitle == 'playlist':
+        vim.command("nnoremap <silent><buffer> <space> :python play_current()<CR>")
+        vim.command("nnoremap <silent><buffer> d :python remove_current()<CR>")
+        vim.command("vnoremap <silent><buffer> d :python remove_range()<CR>")
+    else:
+        vim.command("nnoremap <silent><buffer> s :python handle_item(_get_current(), 'list_stream')<CR>")
+        vim.command("nnoremap <silent><buffer> p :python handle_item(_get_current(), 'list_playlists')<CR>")
+        vim.command("nnoremap <silent><buffer> t :python handle_item(_get_current(), 'list_tracks')<CR>")
+        vim.command("nnoremap <silent><buffer> <space> :python handle_item(_get_current(), 'enqueue')<CR>")
+        vim.command("vnoremap <silent><buffer> <space> :python enqueue_range()<CR>")
+
+
+def _parse_buffer_name(b_name):
+    try:
+        _, b_name = os.path.split(b_name)
+    except:
+        pass
+
+    try:
+        _, b_name = b_name.split('-', 1)
+    except:
+        pass
+
+    return b_name
 
 
 def _get_line_num():
@@ -286,90 +504,151 @@ def _get_line_num():
     return line_num - 1
 
 
-def list_playlist():
-    _make_window()
-    vim.command("nnoremap <silent><buffer> <leader> :python player_do('play', _get_line_num())<CR>")
-    vim.command("nnoremap <silent><buffer> d        :python player_do('remove', _get_line_num())<CR>")
+def _get_current():
+    # Get the buffer name
+    b_name = _parse_buffer_name(vim.current.buffer.name)
+    if b_name not in _buffer:
+        return None
 
-    b = []
-    status = player.get_status()
-    for track in player.list_tracks():
-        prefix = '*' if int(track.plid) == int(status['plid']) else ' '
-        b.append('%s %s' % (prefix, track))
-
-    vim.current.buffer[:] = b
+    try:
+        return _buffer[b_name][_get_line_num()]
+    except:
+        return None
 
 
-def list_bookmarks():
-    _make_window()
-    global _buff
-    vim.command("nnoremap <silent><buffer> <leader> :python player_do('enqueue', _buff[_get_line_num()])<CR>")
-    _buff = get_client().playlist.tracks
-    vim.current.buffer[:] = [str(item) for item in _buff]
+def _get_buffer(name):
+    for b in vim.buffers:
+        b_name = _parse_buffer_name(b.name)
+        if b_name == name:
+            return b
+    return None
 
 
-def list_search(category, q=None):
-    _make_window()
-    global _buff
+@_echo
+def search(category, q=None):
+    for b in vim.buffers:
+        _, b_name = os.path.split(b.name)
+        if b_name.startswith("_soundcloud"):
+            _, subtitle = b_name.split('-', 1)
+            if subtitle in ['playlist', 'buffer']:
+                continue
+            _buffer.pop(subtitle, None)
 
     if category == 'tracks':
-        vim.command("nnoremap <silent><buffer> <leader> :python player_do('enqueue', _buff[_get_line_num()])<CR>")
-        _buff = Track.get(q)
-
+        _type = 'tracks'
+        items = Track.get(q)
     elif category == 'playlists':
-        vim.command("nnoremap <silent><buffer> <leader> :python player_do('enqueue', _buff[_get_line_num()])<CR>")
-        vim.command("nnoremap <silent><buffer> t :python list_tracks(_buff[_get_line_num()])<CR>")
-        _buff = Playlist.get(q)
-
+        _type = 'playlists'
+        items = Playlist.get(q)
     elif category == 'users':
-        vim.command("nnoremap <silent><buffer> t :python list_tracks(_buff[_get_line_num()])<CR>")
-        vim.command("nnoremap <silent><buffer> p :python list_playlists(_buff[_get_line_num()])<CR>")
-        _buff = User.get(q)
-
-    if _buff:
-        vim.current.buffer[:] = [str(item) for item in _buff]
-
-
-def list_tracks(parent):
-    _make_window()
-    global _buff
-    vim.command("nnoremap <silent><buffer> <leader> :python player_do('enqueue', _buff[_get_line_num()])<CR>")
-    _buff = parent.tracks
-    vim.current.buffer[:] = [str(track) for track in _buff]
-
-
-def list_playlists(parent):
-    _make_window()
-    global _buff
-    vim.command("nnoremap <silent><buffer> <leader> :python player_do('enqueue', _buff[_get_line_num()])<CR>")
-    vim.command("nnoremap <silent><buffer> t :python list_tracks(_buff[_get_line_num()])<CR>")
-    _buff = parent.playlists
-    vim.current.buffer[:] = [str(playlist) for playlist in _buff]
-
-
-def player_do(func, arg=None):
-    if arg is not None:
-        getattr(player, func)(arg)
+        _type = 'users'
+        items = User.get(q)
     else:
-        getattr(player, func)()
+        return 'unknown category %s' % category
+
+    msg = 'searching %s' % _type
+    subtitle = _type[:]
+    if q:
+        msg += ' like %s' % q
+        subtitle += '-' + q
+
+    _make_window(subtitle)
+    _buffer[subtitle] = items
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = [_display_item(item) for item in items]
+    vim.command("setlocal nomodifiable")
+    return msg
+
+
+def _update_playlist():
+    plid = player.get_status()['plid']
+    tracks = player.list_tracks()
+    _buffer["playlist"] = tracks
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = ['{} {}'.format('*' if str(plid) == str(track.plid) else ' ', track) for track in tracks]
+    vim.command("setlocal nomodifiable")
+
+
+@_echo
+def show_playlist():
+    _make_window("playlist")
+    _update_playlist()
+    return 'listing %s tracks in your playlist' % len(_buffer["playlist"])
+
+
+def _update_bookmarks():
+    _buffer["bookmarks"] = get_client().playlist.tracks
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = [_display_item(item) for item in _buffer["bookmarks"]]
+    vim.command("setlocal nomodifiable")
+
+
+@_echo
+def show_bookmarks():
+    _make_window("bookmarks")
+    _update_bookmarks()
+    return 'listing %s bookmarks' % len(_buffer["bookmarks"])
+
+
+@_echo
+def show_stream():
+    _make_window("stream")
+    resp = requests.get('http://api.soundcloud.com/me/activities/all?limit=50', params={
+        'oauth_token': get_client().sc_client.access_token,
+        'client_id': client_id,
+    })
+    if not resp.status_code == 200:
+        return "error %s" % resp.status_code
+
+    _buffer["stream"] = []
+    for item in resp.json()['collection']:
+        if item['type'] in ['track', 'track-repost']:
+            _buffer["stream"].append(Track(**item['origin']))
+        elif item['type'] in ['playlist', 'playlist-repost']:
+            _buffer["stream"].append(Playlist(**item['origin']))
+
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = [_display_item(item) for item in _buffer["stream"]]
+    vim.command("setlocal nomodifiable")
+    return 'listing your stream'
+
+
+@_echo
+def player_do(action, arg_str=None):
+    if not hasattr(player, action):
+        print "invalid action %s" % action
+    func = getattr(player, action)
+    if arg_str:
+        return func(arg_str)
+    else:
+        return func()
 EOF
 
 
-command! -nargs=0 SCplay    :python player_do('play')
-command! -nargs=0 SCstop    :python player_do('stop')
-command! -nargs=0 SCnext    :python player_do('next')
-command! -nargs=0 SCprev    :python player_do('previous')
-command! -nargs=0 SCpause   :python player_do('pause')
-command! -nargs=0 SCshuffle :python player_do('shuffle')
-command! -nargs=0 SCclear   :python player_do('clear')
-command! -nargs=1 SCseek    :python player_do('seek', '<args>')
-command! -nargs=0 SClist    :python list_playlist()
-command! -nargs=* SCst      :python list_search('tracks', '<args>')
-command! -nargs=* SCsp      :python list_search('playlists', '<args>')
-command! -nargs=* SCsu      :python list_search('users', '<args>')
+autocmd BufEnter _soundcloud-playlist :python _update_playlist()
+" autocmd BufEnter _soundcloud-bookmarks :python _update_bookmarks()
 
-nnoremap <leader><leader>l          :SClist<CR>
-nnoremap <leader><leader>n          :SCnext<CR>
-nnoremap <leader><leader>p          :SCprev<CR>
-nnoremap <leader><leader><leader>   :SCpause<CR>
-nnoremap <leader><leader>b          :python player.bookmark()<CR>
+command! -nargs=0 SCplay        :python player_do('play')
+command! -nargs=0 SCstop        :python player_do('stop')
+command! -nargs=0 SCnext        :python player_do('next')
+command! -nargs=0 SCprev        :python player_do('previous')
+command! -nargs=0 SCpause       :python player_do('pause')
+command! -nargs=0 SCshuffle     :python player_do('shuffle')
+command! -nargs=0 SCclear       :python player_do('clear')
+command! -nargs=1 SCseek        :python player_do('seek', '<args>')
+command! -nargs=0 SClist        :python show_playlist()
+command! -nargs=0 SClistbook    :python show_bookmarks()
+command! -nargs=0 SCliststream  :python show_stream()
+command! -nargs=* SCst          :python search('tracks', '<args>')
+command! -nargs=* SCsp          :python search('playlists', '<args>')
+command! -nargs=* SCsu          :python search('users', '<args>')
+
+nnoremap <silent><leader><leader><leader>   :SCpause<CR>
+nnoremap <silent><leader><leader>l          :SClist<CR>
+nnoremap <silent><leader><leader>L          :SClistbook<CR>
+nnoremap <silent><leader><leader>S          :SCliststream<CR>
+nnoremap <silent><leader><leader>n          :SCnext<CR>
+nnoremap <silent><leader><leader>p          :SCprev<CR>
+nnoremap <silent><leader><leader>b          :python player.bookmark()<CR>
+nnoremap <silent><leader><leader>d          :SCclear<CR>
+nnoremap <silent><leader><leader>s          :SCshuffle<CR>
