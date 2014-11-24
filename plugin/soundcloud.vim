@@ -14,10 +14,6 @@ client_secret = vim.eval('soundcloud_client_secret')
 username =      vim.eval('soundcloud_username')
 password =      vim.eval('soundcloud_password')
 
-def launch_vlc():
-    vim.command("!python %s/start_vlc.py &" % script_path)
-    vim.command("redraw!")
-
 
 class Client(object):
     _base_url = 'http://api.soundcloud.com/'
@@ -463,7 +459,7 @@ def remove_range():
 
 
 def _make_window(subtitle):
-    title = "_soundcloud"
+    title = "sc"
     if subtitle:
         title += "-" + subtitle
 
@@ -529,7 +525,7 @@ def _get_buffer(name):
 def search(category, q=None):
     for b in vim.buffers:
         _, b_name = os.path.split(b.name)
-        if b_name.startswith("_soundcloud"):
+        if b_name.startswith("sc"):
             _, subtitle = b_name.split('-', 1)
             if subtitle in ['playlist', 'buffer']:
                 continue
@@ -626,8 +622,21 @@ def player_do(action, arg_str=None):
 EOF
 
 
-autocmd BufEnter _soundcloud-playlist :python _update_playlist()
-autocmd BufEnter _soundcloud-bookmarks :python _update_bookmarks()
+" Autocommands
+autocmd BufEnter sc-playlist :python _update_playlist()
+autocmd BufEnter sc-bookmarks :python _update_bookmarks()
+
+
+" Commands
+command! -nargs=0 SClaunch      :python launch_vlc()
+
+command! -nargs=0 SCplaylist    :python show_playlist()
+command! -nargs=0 SCbookmarks   :python show_bookmarks()
+command! -nargs=0 SCstream      :python show_stream()
+
+command! -nargs=* SCtracks      :python search('tracks', '<args>')
+command! -nargs=* SCplaylists   :python search('playlists', '<args>')
+command! -nargs=* SCusers       :python search('users', '<args>')
 
 command! -nargs=0 SCplay        :python player_do('play')
 command! -nargs=0 SCstop        :python player_do('stop')
@@ -636,21 +645,20 @@ command! -nargs=0 SCprev        :python player_do('previous')
 command! -nargs=0 SCpause       :python player_do('pause')
 command! -nargs=0 SCshuffle     :python player_do('shuffle')
 command! -nargs=0 SCclear       :python player_do('clear')
+command! -nargs=0 SCmark        :python player_do('bookmark')
 command! -nargs=1 SCseek        :python player_do('seek', '<args>')
-command! -nargs=0 SClist        :python show_playlist()
-command! -nargs=0 SClistbook    :python show_bookmarks()
-command! -nargs=0 SCliststream  :python show_stream()
-command! -nargs=* SCst          :python search('tracks', '<args>')
-command! -nargs=* SCsp          :python search('playlists', '<args>')
-command! -nargs=* SCsu          :python search('users', '<args>')
 
-nnoremap <silent><leader><leader>V          :python launch_vlc()<CR>
+
+" Mappings
+nnoremap <silent><leader><leader>V          :SClaunch<CR>
+
+nnoremap <silent><leader><leader>l          :SCplaylist<CR>
+nnoremap <silent><leader><leader>L          :SCbookmarks<CR>
+nnoremap <silent><leader><leader>S          :SCstream<CR>
+
 nnoremap <silent><leader><leader><leader>   :SCpause<CR>
-nnoremap <silent><leader><leader>l          :SClist<CR>
-nnoremap <silent><leader><leader>L          :SClistbook<CR>
-nnoremap <silent><leader><leader>S          :SCliststream<CR>
 nnoremap <silent><leader><leader>n          :SCnext<CR>
 nnoremap <silent><leader><leader>p          :SCprev<CR>
-nnoremap <silent><leader><leader>b          :python player_do('bookmark')<CR>
-nnoremap <silent><leader><leader>d          :SCclear<CR>
 nnoremap <silent><leader><leader>s          :SCshuffle<CR>
+nnoremap <silent><leader><leader>d          :SCclear<CR>
+nnoremap <silent><leader><leader>b          :SCbookmark<CR>
