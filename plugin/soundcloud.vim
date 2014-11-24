@@ -8,6 +8,7 @@ import soundcloud
 import vim
 
 
+# Core
 script_path = os.path.join(os.path.split(vim.eval('path'))[:-1])[0]
 client_id =     vim.eval('soundcloud_client_id')
 client_secret = vim.eval('soundcloud_client_secret')
@@ -56,6 +57,19 @@ class Client(object):
                     self._playlist = playlist
                     break
         return self._playlist
+
+    def get_my_stream(self):
+        resp = requests.get('http://api.soundcloud.com/me/activities/all?limit=50', params={
+            'oauth_token': get_client().sc_client.access_token,
+            'client_id': client_id,
+        })
+        rtn = []
+        for item in resp.json()['collection']:
+            if item['type'] in ['track', 'track-repost']:
+                rtn.append(Track(**item['origin']))
+            elif item['type'] in ['playlist', 'playlist-repost']:
+                rtn.append(Playlist(**item['origin']))
+        return rtn
 
 
 class Player(object):
@@ -298,6 +312,7 @@ client = None
 _buffer = {}
 
 
+# Helpers
 def get_client():
     """Prevents multiple client calls or doing client calls when you open
     vim."""
@@ -318,6 +333,66 @@ def _echo(func):
             print msg
         return msg
     return wrapper
+
+
+def _make_window(subtitle):
+    title = "sc"
+    if subtitle:
+        title += "-" + subtitle
+
+    vim.command("silent pedit %s" % title)
+    vim.command("wincmd P")
+    vim.command("set buftype=nofile")
+    vim.command("setlocal nobuflisted")
+    vim.command("nnoremap <silent><buffer> q :q<CR>")
+    vim.command("setlocal nomodifiable")
+
+    if subtitle == 'playlist':
+        vim.command("nnoremap <silent><buffer> <space> :python play_current()<CR>")
+        vim.command("nnoremap <silent><buffer> d :python remove_current()<CR>")
+        vim.command("vnoremap <silent><buffer> d :python remove_range()<CR>")
+    else:
+        vim.command("nnoremap <silent><buffer> s :python handle_item(_get_current(), 'list_stream')<CR>")
+        vim.command("nnoremap <silent><buffer> p :python handle_item(_get_current(), 'list_playlists')<CR>")
+        vim.command("nnoremap <silent><buffer> t :python handle_item(_get_current(), 'list_tracks')<CR>")
+        vim.command("nnoremap <silent><buffer> <space> :python handle_item(_get_current(), 'enqueue')<CR>")
+        vim.command("vnoremap <silent><buffer> <space> :python enqueue_range()<CR>")
+
+
+def _get_line_num():
+    line_num, _ = vim.current.window.cursor
+    return line_num - 1
+
+
+def _get_range():
+    start = vim.current.range.start
+    end = vim.current.range.end + 1
+
+
+def _parse_buffer_name(b_name):
+    try:
+        _, b_name = os.path.split(b_name)
+    except:
+        pass
+
+    try:
+        _, b_name = b_name.split('-', 1)
+    except:
+        pass
+
+    return b_name
+
+
+def _get_current():
+    # Get the buffer name
+    b_name = _parse_buffer_name(vim.current.buffer.name)
+    if b_name not in _buffer:
+        return None
+
+    try:
+        return _buffer[b_name][_get_line_num()]
+    except:
+        return None
 
 
 def _display_item(item):
@@ -397,6 +472,23 @@ def _handle_track(track, action):
         return "can't %s a track" % action
 
 
+def _update_playlist():
+    plid = player.get_status()['plid']
+    tracks = player.list_tracks()
+    _buffer["playlist"] = tracks
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = ['{} {}'.format('*' if str(plid) == str(track.plid) else ' ', track) for track in tracks]
+    vim.command("setlocal nomodifiable")
+
+
+def _update_bookmarks():
+    _buffer["bookmarks"] = get_client().playlist.tracks
+    vim.command("setlocal modifiable")
+    vim.current.buffer[:] = [_display_item(item) for item in _buffer["bookmarks"]]
+    vim.command("setlocal nomodifiable")
+
+
+# Use these
 @_echo
 def handle_item(item, action):
     if isinstance(item, User):
@@ -422,8 +514,7 @@ def enqueue_range():
     if b_name not in _buffer:
         return None
 
-    start = vim.current.range.start
-    end = vim.current.range.end + 1
+    start, end = _get_range()
     items = _buffer[b_name][start:end]
 
     total = 0
@@ -450,75 +541,11 @@ def remove_current():
 
 @_echo
 def remove_range():
-    start = vim.current.range.start
-    end = vim.current.range.end + 1
+    start, end = _get_range()
     for i in range(end - start):
         player.remove(start)
     _update_playlist()
     return "removed %s tracks" % (end - start)
-
-
-def _make_window(subtitle):
-    title = "sc"
-    if subtitle:
-        title += "-" + subtitle
-
-    vim.command("silent pedit %s" % title)
-    vim.command("wincmd P")
-    vim.command("set buftype=nofile")
-    vim.command("setlocal nobuflisted")
-    vim.command("nnoremap <silent><buffer> q :q<CR>")
-    vim.command("setlocal nomodifiable")
-
-    if subtitle == 'playlist':
-        vim.command("nnoremap <silent><buffer> <space> :python play_current()<CR>")
-        vim.command("nnoremap <silent><buffer> d :python remove_current()<CR>")
-        vim.command("vnoremap <silent><buffer> d :python remove_range()<CR>")
-    else:
-        vim.command("nnoremap <silent><buffer> s :python handle_item(_get_current(), 'list_stream')<CR>")
-        vim.command("nnoremap <silent><buffer> p :python handle_item(_get_current(), 'list_playlists')<CR>")
-        vim.command("nnoremap <silent><buffer> t :python handle_item(_get_current(), 'list_tracks')<CR>")
-        vim.command("nnoremap <silent><buffer> <space> :python handle_item(_get_current(), 'enqueue')<CR>")
-        vim.command("vnoremap <silent><buffer> <space> :python enqueue_range()<CR>")
-
-
-def _parse_buffer_name(b_name):
-    try:
-        _, b_name = os.path.split(b_name)
-    except:
-        pass
-
-    try:
-        _, b_name = b_name.split('-', 1)
-    except:
-        pass
-
-    return b_name
-
-
-def _get_line_num():
-    line_num, _ = vim.current.window.cursor
-    return line_num - 1
-
-
-def _get_current():
-    # Get the buffer name
-    b_name = _parse_buffer_name(vim.current.buffer.name)
-    if b_name not in _buffer:
-        return None
-
-    try:
-        return _buffer[b_name][_get_line_num()]
-    except:
-        return None
-
-
-def _get_buffer(name):
-    for b in vim.buffers:
-        b_name = _parse_buffer_name(b.name)
-        if b_name == name:
-            return b
-    return None
 
 
 @_echo
@@ -557,27 +584,11 @@ def search(category, q=None):
     return msg
 
 
-def _update_playlist():
-    plid = player.get_status()['plid']
-    tracks = player.list_tracks()
-    _buffer["playlist"] = tracks
-    vim.command("setlocal modifiable")
-    vim.current.buffer[:] = ['{} {}'.format('*' if str(plid) == str(track.plid) else ' ', track) for track in tracks]
-    vim.command("setlocal nomodifiable")
-
-
 @_echo
 def show_playlist():
     _make_window("playlist")
     _update_playlist()
     return 'listing %s tracks in your playlist' % len(_buffer["playlist"])
-
-
-def _update_bookmarks():
-    _buffer["bookmarks"] = get_client().playlist.tracks
-    vim.command("setlocal modifiable")
-    vim.current.buffer[:] = [_display_item(item) for item in _buffer["bookmarks"]]
-    vim.command("setlocal nomodifiable")
 
 
 @_echo
@@ -590,20 +601,7 @@ def show_bookmarks():
 @_echo
 def show_stream():
     _make_window("stream")
-    resp = requests.get('http://api.soundcloud.com/me/activities/all?limit=50', params={
-        'oauth_token': get_client().sc_client.access_token,
-        'client_id': client_id,
-    })
-    if not resp.status_code == 200:
-        return "error %s" % resp.status_code
-
-    _buffer["stream"] = []
-    for item in resp.json()['collection']:
-        if item['type'] in ['track', 'track-repost']:
-            _buffer["stream"].append(Track(**item['origin']))
-        elif item['type'] in ['playlist', 'playlist-repost']:
-            _buffer["stream"].append(Playlist(**item['origin']))
-
+    _buffer["stream"] = get_client().get_my_stream()
     vim.command("setlocal modifiable")
     vim.current.buffer[:] = [_display_item(item) for item in _buffer["stream"]]
     vim.command("setlocal nomodifiable")
