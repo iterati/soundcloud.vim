@@ -9,24 +9,33 @@ import vim
 
 
 # Core
-script_path = os.path.join(os.path.split(vim.eval('path'))[:-1])[0]
-client_id =     vim.eval('soundcloud_client_id')
-client_secret = vim.eval('soundcloud_client_secret')
-username =      vim.eval('soundcloud_username')
-password =      vim.eval('soundcloud_password')
+SCRIPT_PATH =           os.path.join(os.path.split(vim.eval('path'))[:-1])[0]
+CLIENT_ID =             vim.eval('soundcloud_client_id')
+CLIENT_SECRET =         vim.eval('soundcloud_client_secret')
+USERNAME =              vim.eval('soundcloud_username')
+PASSWORD =              vim.eval('soundcloud_password')
+SOUNDCLOUD_PLAYLIST =   vim.eval('soundcloud_playlist')
 
 
 class Client(object):
-    _base_url = 'http://api.soundcloud.com/'
-
     def __init__(self, client_id, client_secret, username, password):
-        self.sc_client = soundcloud.Client(
-            client_id=client_id,
-            client_secret=client_secret,
-            username=username,
-            password=password,
-        )
         self.client_id = client_id
+        self.client_secret = client_secret
+        self.username = username
+        self.password = password
+        self.initialized = False
+
+    @property
+    def sc_client(self):
+        if not self.initialized:
+            self._sc_client = soundcloud.Client(
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                username=self.username,
+                password=self.password,
+            )
+            self.initialized = True
+        return self._sc_client
 
     def get(self, endpoint, **kwargs):
         resp = self.sc_client.get(endpoint, **kwargs)
@@ -53,15 +62,19 @@ class Client(object):
     def playlist(self):
         if not hasattr(self, '_playlist'):
             for playlist in (Playlist(**d) for d in self.get('me/playlists')):
-                if playlist.title == 'Silverlining Playlist':
+                if playlist.title == SOUNDCLOUD_PLAYLIST:
                     self._playlist = playlist
                     break
+            else:
+                resp = client.post('/playlists', playlist={
+                    'title': SOUNDCLOUD_PLAYLIST, 'sharing': 'private'})
+                self._playlist = Playlist(**resp)
         return self._playlist
 
     def get_my_stream(self):
         resp = requests.get('http://api.soundcloud.com/me/activities/all?limit=50', params={
-            'oauth_token': get_client().sc_client.access_token,
-            'client_id': client_id,
+            'oauth_token': client.sc_client.access_token,
+            'client_id': self.client_id,
         })
         rtn = []
         for item in resp.json()['collection']:
@@ -81,14 +94,16 @@ class Player(object):
         return self._session.get(self._base_url + endpoint, params=kwargs, verify=False)
 
     def list_tracks(self):
-        resp = self.get('playlist.json').json()['children'][0]['children']
+        resp = self.get('playlist.json')
+        resp.encoding = 'utf8'
+        items = resp.json()['children'][0]['children']
         tracks = []
-        for d in resp:
-            id, username, title = d['name'].split('::')
+        for item in items:
+            id, username, title = item['name'].split('::')
             username = username.replace('+', ' ')
             title = title.replace('+', ' ')
             track = Track(id, title, username)
-            setattr(track, 'plid', d['id'])
+            setattr(track, 'plid', item['id'])
             tracks.append(track)
         return tracks
 
@@ -105,7 +120,7 @@ class Player(object):
             title = resp['information']['category']['meta']['title']
             _id, username, title = title.split('::')
             rtn['now_playing'] = {
-                '_id': _id,
+                'id': _id,
                 'username': username.replace('+', ' '),
                 'title': title.replace('+', ' '),
             }
@@ -113,6 +128,14 @@ class Player(object):
             pass
 
         return rtn
+
+    @property
+    def now_playing(self):
+        status = self.get_status()
+        if 'now_playing' not in status:
+            return None
+        else:
+            return Track(**status['now_playing'])
 
     def play(self, idx=None):
         if idx is None:
@@ -179,68 +202,71 @@ class Player(object):
             if int(track.plid) == int(plid):
                 break
 
-        tracks = [{'id': t._id} for t in get_client().playlist.tracks]
+        tracks = [{'id': t._id} for t in client.playlist.tracks]
         tracks.append({'id': track._id})
-        playlist = get_client().put(get_client().playlist.uri, playlist={'tracks': tracks})
-        setattr(get_client().playlist, '_tracks', [Track(**t) for t in playlist['tracks']])
+        playlist = client.put(client.playlist.uri, playlist={'tracks': tracks})
+        setattr(client.playlist, '_tracks', [Track(**t) for t in playlist['tracks']])
         return "bookmarked %s" % track
 
 
 class Track(object):
     def __init__(self, id, title, username=None, user=None, **kwargs):
         self._id = int(id)
-        self.title = title.encode('utf-8')
-        self.username = (username or user['username']).encode('utf-8')
+        self.title = title
+        self.username = username or user['username']
 
     def __repr__(self):
-        return "{0.username} - {0.title}".format(self)
+        return self.username + " - " + self.title
 
     def to_vlc(self):
-        return "::".join([str(self._id), self.username, self.title])
+        return u"::".join([unicode(self._id), self.username, self.title])
 
     def get_info(self):
-        return get_client().get('/tracks/%s' % self._id)[0]
+        return client.get('/tracks/%s' % self._id)
+
+    def get_url(self):
+        return self.get_info()['permalink_url']
 
     @classmethod
     def get(cls, q):
         if q and unicode(q).isdigit():
-            tracks = get_client().get('tracks/%s' % q)
+            tracks = client.get('tracks/%s' % q)
         else:
-            tracks = get_client().get('tracks', q=q)
+            tracks = client.get('tracks', q=q)
         return [Track(**track) for track in tracks]
 
     @classmethod
     def get_from_stream(cls):
-        resp = get_client().get('me/activities/tracks/affiliated')
+        resp = client.get('me/activities/tracks/affiliated')
         return [Track(**i['origin']) for i in resp['collection']]
 
     def get_related(self):
-        resp = get_client().get('tracks/%s/related' % self._id)
+        resp = client.get('tracks/%s/related' % self._id)
         return [Track(**i) for i in resp]
 
     @property
     def stream_uri(self):
         return 'http://api.soundcloud.com/tracks/%s/stream?client_id=%s' % (
-            self._id, get_client().client_id)
+            self._id, client.client_id)
 
 
 class Playlist(dict):
     def __init__(self, id, title, tracks=None, user=None, username=None, **kwargs):
         self._id = int(id)
-        self.title = title.encode('utf-8')
-        self.username = (username or user['username']).encode('utf-8')
+        self.title = title
+        self.username = username or user['username']
         if tracks:
             self._tracks = [Track(**track) for track in tracks]
 
     def __repr__(self):
-        return "{0.username} - {0.title}".format(self)
+        return self.username + " - " + self.title
 
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            playlists = get_client().get('playlists/%s' % q)
+            playlists = client.get('playlists/%s' % q)
         else:
-            playlists = get_client().get('playlists', q=q)
+            playlists = client.get('playlists', q=q)
         return [Playlist(**playlist) for playlist in playlists]
 
     @property
@@ -254,14 +280,14 @@ class Playlist(dict):
         return 'playlists/%s' % self._id
 
     def update(self):
-        playlist = get_client().get('playlists/%s' % self._id)
+        playlist = client.get('playlists/%s' % self._id)
         setattr(self, '_tracks', [Track(**t) for t in playlist['tracks']])
 
 
 class User(object):
     def __init__(self, id, username, **kwargs):
         self._id = int(id)
-        self.username = username.encode('utf-8')
+        self.username = username
 
     def __repr__(self):
         return self.username
@@ -269,15 +295,15 @@ class User(object):
     @classmethod
     def get(cls, q=None):
         if q and unicode(q).isdigit():
-            users = get_client().get('users/%s' % q)
+            users = client.get('users/%s' % q)
         else:
-            users = get_client().get('users', q=q)
+            users = client.get('users', q=q)
         return [User(**user) for user in users]
 
     @property
     def tracks(self):
         if not hasattr(self, '_tracks'):
-            tracks = get_client().get('users/%s/tracks' % self._id)
+            tracks = client.get('users/%s/tracks' % self._id)
             self._tracks = [Track(**t) for t in tracks]
         return self._tracks
 
@@ -295,7 +321,6 @@ class User(object):
             url = "https://api-v2.soundcloud.com/profile/soundcloud:users:%s?limit=50&offset=%s"
             r = requests.get(url % (self._id, i * 50))
             if not r.status_code == 200:
-                print "fuck"
                 continue
 
             for item in r.json()['collection']:
@@ -308,21 +333,15 @@ class User(object):
 
 
 player = Player()
-client = None
+client = Client(CLIENT_ID, CLIENT_SECRET, USERNAME, PASSWORD)
 _buffer = {}
 
 
 # Helpers
-def get_client():
-    """Prevents multiple client calls or doing client calls when you open
-    vim."""
-    global client
-    if not client:
-        try:
-            client = Client(client_id, client_secret, username, password)
-        except:
-            client = None
-    return client
+def launch_vlc():
+    vim.command("silent !python %s/start_vlc.py &" % SCRIPT_PATH)
+    vim.command("redraw!")
+    print "started VLC server"
 
 
 def _echo(func):
@@ -344,8 +363,8 @@ def _make_window(subtitle):
     vim.command("wincmd P")
     vim.command("set buftype=nofile")
     vim.command("setlocal nobuflisted")
-    vim.command("nnoremap <silent><buffer> q :q<CR>")
     vim.command("setlocal nomodifiable")
+    vim.command("nnoremap <silent><buffer> q :q<CR>")
 
     if subtitle == 'playlist':
         vim.command("nnoremap <silent><buffer> <space> :python play_current()<CR>")
@@ -367,6 +386,7 @@ def _get_line_num():
 def _get_range():
     start = vim.current.range.start
     end = vim.current.range.end + 1
+    return start, end
 
 
 def _parse_buffer_name(b_name):
@@ -404,7 +424,7 @@ def _display_item(item):
         _type = 't'
     else:
         raise ValueError("item is %s" % type(item))
-    return "{:<8}{}".format(_type, item)
+    return u"{:<8}{}".format(_type, item)
 
 
 def _handle_user(user, action):
@@ -477,12 +497,12 @@ def _update_playlist():
     tracks = player.list_tracks()
     _buffer["playlist"] = tracks
     vim.command("setlocal modifiable")
-    vim.current.buffer[:] = ['{} {}'.format('*' if str(plid) == str(track.plid) else ' ', track) for track in tracks]
+    vim.current.buffer[:] = [u'%s %s' % ('*' if str(plid) == str(track.plid) else ' ', track) for track in tracks]
     vim.command("setlocal nomodifiable")
 
 
 def _update_bookmarks():
-    _buffer["bookmarks"] = get_client().playlist.tracks
+    _buffer["bookmarks"] = client.playlist.tracks
     vim.command("setlocal modifiable")
     vim.current.buffer[:] = [_display_item(item) for item in _buffer["bookmarks"]]
     vim.command("setlocal nomodifiable")
@@ -601,7 +621,7 @@ def show_bookmarks():
 @_echo
 def show_stream():
     _make_window("stream")
-    _buffer["stream"] = get_client().get_my_stream()
+    _buffer["stream"] = client.get_my_stream()
     vim.command("setlocal modifiable")
     vim.current.buffer[:] = [_display_item(item) for item in _buffer["stream"]]
     vim.command("setlocal nomodifiable")
@@ -617,6 +637,12 @@ def player_do(action, arg_str=None):
         return func(arg_str)
     else:
         return func()
+
+@_echo
+def get_url():
+    url = player.now_playing.get_url()
+    vim.command("let @+='%s'" % url)
+    return url
 EOF
 
 
@@ -646,6 +672,8 @@ command! -nargs=0 SCclear       :python player_do('clear')
 command! -nargs=0 SCmark        :python player_do('bookmark')
 command! -nargs=1 SCseek        :python player_do('seek', '<args>')
 
+command! -nargs=0 SCgeturl      :python get_url()
+
 
 " Mappings
 nnoremap <silent><leader><leader>V          :SClaunch<CR>
@@ -659,4 +687,6 @@ nnoremap <silent><leader><leader>n          :SCnext<CR>
 nnoremap <silent><leader><leader>p          :SCprev<CR>
 nnoremap <silent><leader><leader>s          :SCshuffle<CR>
 nnoremap <silent><leader><leader>d          :SCclear<CR>
-nnoremap <silent><leader><leader>b          :SCbookmark<CR>
+nnoremap <silent><leader><leader>b          :SCmark<CR>
+
+nnoremap <silent><leader><leader>y          :SCgeturl<CR>
