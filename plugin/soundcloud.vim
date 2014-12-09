@@ -37,26 +37,36 @@ class Client(object):
             self.initialized = True
         return self._sc_client
 
-    def get(self, endpoint, **kwargs):
-        resp = self.sc_client.get(endpoint, **kwargs)
+    def _base_request(self, verb, endpoint, attempt=0, **kwargs):
+        if attempt > 1:
+            raise requests.exceptions.HTTPError('401 Client Error: Unauthorized')
+
+        if not hasattr(self.sc_client, verb):
+            raise ValueError('bad verb')
+
+        func = getattr(self.sc_client, verb)
+        try:
+            resp = func(endpoint, **kwargs)
+        except requests.exceptions.HTTPError as e:
+            if '401' not in str(e):
+                raise e
+            # refresh auth
+            self.initialized = False
+            return self._base_request(verb, endpoint, attempt+1, **kwargs)
+
         if isinstance(resp, soundcloud.resource.ResourceList):
             return [r.obj for r in resp]
         elif isinstance(resp, soundcloud.resource.Resource):
             return resp.obj
+
+    def get(self, endpoint, **kwargs):
+        return self._base_request('get', endpoint, **kwargs)
 
     def post(self, endpoint, **kwargs):
-        resp = self.sc_client.post(endpoint, **kwargs)
-        if isinstance(resp, soundcloud.resource.ResourceList):
-            return [r.obj for r in resp]
-        elif isinstance(resp, soundcloud.resource.Resource):
-            return resp.obj
+        return self._base_request('post', endpoint, **kwargs)
 
     def put(self, endpoint, **kwargs):
-        resp = self.sc_client.put(endpoint, **kwargs)
-        if isinstance(resp, soundcloud.resource.ResourceList):
-            return [r.obj for r in resp]
-        elif isinstance(resp, soundcloud.resource.Resource):
-            return resp.obj
+        return self._base_request('put', endpoint, **kwargs)
 
     @property
     def playlist(self):
