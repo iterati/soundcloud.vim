@@ -367,7 +367,7 @@ def _echo(func):
 def _make_window(subtitle):
     title = "sc"
     if subtitle:
-        title += "-" + subtitle
+        title += "-" + subtitle.replace(' ', '+')
 
     vim.command("silent pedit %s" % title)
     vim.command("wincmd P")
@@ -589,22 +589,19 @@ def search(category, q=None):
             _buffer.pop(subtitle, None)
 
     if category == 'tracks':
-        _type = 'tracks'
         items = Track.get(q)
     elif category == 'playlists':
-        _type = 'playlists'
         items = Playlist.get(q)
     elif category == 'users':
-        _type = 'users'
         items = User.get(q)
     else:
         return 'unknown category %s' % category
 
-    msg = 'searching %s' % _type
-    subtitle = _type[:]
+    msg = 'searching %s' % category
+    subtitle = category[:]
     if q:
         msg += ' like %s' % q
-        subtitle += '-' + q
+        subtitle += '-' + q.replace(' ', '+')
 
     _make_window(subtitle)
     _buffer[subtitle] = items
